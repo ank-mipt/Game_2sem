@@ -1,0 +1,632 @@
+#include <SFML/Graphics.hpp>
+#include <SFML/Audio.hpp>
+#include <iostream>
+#include <sstream>
+
+#include "anim.hpp"
+using namespace sf;
+
+float offsetX = 0, offsetY = 0;
+
+const int H = 17;
+const int W = 150;
+
+
+///////////////////////////////////////
+
+
+int Object::GetPropertyInt(std::string name)
+{
+	return atoi(properties[name].c_str());
+}
+
+float Object::GetPropertyFloat(std::string name)
+{
+	return strtod(properties[name].c_str(), NULL);
+}
+
+std::string Object::GetPropertyString(std::string name)
+{
+	return properties[name];
+}
+
+bool Level::LoadFromFile(std::string filename)
+{
+	TiXmlDocument levelFile(filename.c_str());
+
+	// Загружаем XML-карту
+	if (!levelFile.LoadFile())
+	{
+		std::cout << "Loading level \"" << filename << "\" failed." << std::endl;
+		return false;
+	}
+
+	// Работаем с контейнером map
+	TiXmlElement* map;
+	map = levelFile.FirstChildElement("map");
+
+	// Пример карты: <map version="1.0" orientation="orthogonal"
+	// width="10" height="10" tilewidth="34" tileheight="34">
+	width = atoi(map->Attribute("width"));
+	height = atoi(map->Attribute("height"));
+	tileWidth = atoi(map->Attribute("tilewidth"));
+	tileHeight = atoi(map->Attribute("tileheight"));
+
+	// Берем описание тайлсета и идентификатор первого тайла
+	TiXmlElement* tilesetElement;
+	tilesetElement = map->FirstChildElement("tileset");
+	firstTileID = atoi(tilesetElement->Attribute("firstgid"));
+
+	// source - путь до картинки в контейнере image
+	TiXmlElement* image;
+	image = tilesetElement->FirstChildElement("image");
+	std::string imagepath = image->Attribute("source");
+
+	// Пытаемся загрузить тайлсет
+	sf::Image img;
+
+	if (!img.loadFromFile(imagepath))
+	{
+		std::cout << "Failed to load tile sheet." << std::endl;
+		return false;
+	}
+
+
+	img.createMaskFromColor(sf::Color(255, 255, 255));
+	tilesetImage.loadFromImage(img);
+	tilesetImage.setSmooth(false);
+
+	// Получаем количество столбцов и строк тайлсета
+	int columns = tilesetImage.getSize().x / tileWidth;
+	int rows = tilesetImage.getSize().y / tileHeight;
+
+	// Вектор из прямоугольников изображений (TextureRect)
+	std::vector<sf::Rect<int> > subRects;
+
+	for (int y = 0; y < rows; y++)
+		for (int x = 0; x < columns; x++)
+		{
+			sf::Rect<int> rect;
+
+			rect.top = y * tileHeight;
+			rect.height = tileHeight;
+			rect.left = x * tileWidth;
+			rect.width = tileWidth;
+
+			subRects.push_back(rect);
+		}
+
+	// Работа со слоями
+	TiXmlElement* layerElement;
+	layerElement = map->FirstChildElement("layer");
+	while (layerElement)
+	{
+		Layer layer;
+
+		// Если присутствует opacity, то задаем прозрачность слоя, иначе он полностью непрозрачен
+		if (layerElement->Attribute("opacity") != NULL)
+		{
+			float opacity = strtod(layerElement->Attribute("opacity"), NULL);
+			layer.opacity = 255 * opacity;
+		}
+		else
+		{
+			layer.opacity = 255;
+		}
+
+		// Контейнер <data>
+		TiXmlElement* layerDataElement;
+		layerDataElement = layerElement->FirstChildElement("data");
+
+		if (layerDataElement == NULL)
+		{
+			std::cout << "Bad map. No layer information found." << std::endl;
+		}
+
+		// Контейнер <tile> - описание тайлов каждого слоя
+		TiXmlElement* tileElement;
+		tileElement = layerDataElement->FirstChildElement("tile");
+
+		if (tileElement == NULL)
+		{
+			std::cout << "Bad map. No tile information found." << std::endl;
+			return false;
+		}
+
+		int x = 0;
+		int y = 0;
+
+		while (tileElement)
+		{
+			int tileGID = atoi(tileElement->Attribute("gid"));
+			int subRectToUse = tileGID - firstTileID;
+
+			// Устанавливаем TextureRect каждого тайла
+			if (subRectToUse >= 0)
+			{
+				sf::Sprite sprite;
+				sprite.setTexture(tilesetImage);
+				sprite.setTextureRect(subRects[subRectToUse]);
+				sprite.setPosition(x * tileWidth, y * tileHeight);
+				sprite.setColor(sf::Color(255, 255, 255, layer.opacity));
+
+				layer.tiles.push_back(sprite);
+			}
+
+			tileElement = tileElement->NextSiblingElement("tile");
+
+			x++;
+			if (x >= width)
+			{
+				x = 0;
+				y++;
+				if (y >= height)
+					y = 0;
+			}
+		}
+
+		layers.push_back(layer);
+
+		layerElement = layerElement->NextSiblingElement("layer");
+	}
+
+	// Работа с объектами
+	TiXmlElement* objectGroupElement;
+
+	// Если есть слои объектов
+	if (map->FirstChildElement("objectgroup") != NULL)
+	{
+		objectGroupElement = map->FirstChildElement("objectgroup");
+		while (objectGroupElement)
+		{
+			// Контейнер <object>
+			TiXmlElement* objectElement;
+			objectElement = objectGroupElement->FirstChildElement("object");
+
+			while (objectElement)
+			{
+				// Получаем все данные - тип, имя, позиция, etc
+				std::string objectType;
+				if (objectElement->Attribute("type") != NULL)
+				{
+					objectType = objectElement->Attribute("type");
+				}
+				std::string objectName;
+				if (objectElement->Attribute("name") != NULL)
+				{
+					objectName = objectElement->Attribute("name");
+				}
+				int x = atoi(objectElement->Attribute("x"));
+				int y = atoi(objectElement->Attribute("y"));
+
+				int width, height;
+
+				sf::Sprite sprite;
+				sprite.setTexture(tilesetImage);
+				sprite.setTextureRect(sf::Rect<int>(0, 0, 0, 0));
+				sprite.setPosition(x, y);
+
+				if (objectElement->Attribute("width") != NULL)
+				{
+					width = atoi(objectElement->Attribute("width"));
+					height = atoi(objectElement->Attribute("height"));
+				}
+				else
+				{
+					width = subRects[atoi(objectElement->Attribute("gid")) - firstTileID].width;
+					height = subRects[atoi(objectElement->Attribute("gid")) - firstTileID].height;
+					sprite.setTextureRect(subRects[atoi(objectElement->Attribute("gid")) - firstTileID]);
+				}
+
+				// Экземпляр объекта
+				Object object;
+				object.name = objectName;
+				object.type = objectType;
+				object.sprite = sprite;
+
+				sf::Rect <float> objectRect;
+				objectRect.top = y;
+				objectRect.left = x;
+				objectRect.height = height;
+				objectRect.width = width;
+				object.rect = objectRect;
+
+				// "Переменные" объекта
+				TiXmlElement* properties;
+				properties = objectElement->FirstChildElement("properties");
+				if (properties != NULL)
+				{
+					TiXmlElement* prop;
+					prop = properties->FirstChildElement("property");
+					if (prop != NULL)
+					{
+						while (prop)
+						{
+							std::string propertyName = prop->Attribute("name");
+							std::string propertyValue = prop->Attribute("value");
+
+							object.properties[propertyName] = propertyValue;
+
+							prop = prop->NextSiblingElement("property");
+						}
+					}
+				}
+
+
+				objects.push_back(object);
+
+				objectElement = objectElement->NextSiblingElement("object");
+			}
+			objectGroupElement = objectGroupElement->NextSiblingElement("objectgroup");
+		}
+	}
+	else
+	{
+		std::cout << "No object layers found..." << std::endl;
+	}
+
+	return true;
+}
+
+Object Level::GetObject(std::string name)
+{
+	// Только первый объект с заданным именем
+	for (int i = 0; i < objects.size(); i++)
+		if (objects[i].name == name)
+			return objects[i];
+}
+
+std::vector<Object> Level::GetObjects(std::string name)
+{
+	// Все объекты с заданным именем
+	std::vector<Object> vec;
+	for (int i = 0; i < objects.size(); i++)
+		if (objects[i].name == name)
+			vec.push_back(objects[i]);
+
+	return vec;
+}
+
+
+std::vector<Object> Level::GetAllObjects()
+{
+	return objects;
+};
+
+
+sf::Vector2i Level::GetTileSize()
+{
+	return sf::Vector2i(tileWidth, tileHeight);
+}
+
+void Level::Draw(sf::RenderWindow& window)
+{
+	// Рисуем все тайлы (объекты НЕ рисуем!)
+	for (int layer = 0; layer < layers.size(); layer++)
+		for (int tile = 0; tile < layers[layer].tiles.size(); tile++)
+			window.draw(layers[layer].tiles[tile]);
+}
+
+class Entity
+{
+public:
+	float x, y, dx, dy, w, h;
+	AnimationManager anim;
+	std::vector<Object> obj;
+	bool life, dir;
+	float timer, timer_end;
+	std::string Name;
+	int Health;
+
+	Entity(AnimationManager& A, int X, int Y)
+	{
+		anim = A;
+		x = X;
+		y = Y;
+		dir = 0;
+
+		life = true;
+		timer = 0;
+		timer_end = 0;
+		dx = dy = 0;
+	}
+
+	virtual void update(float time) = 0;
+
+	void draw(RenderWindow& window)
+	{
+		anim.draw(window, x, y + h);
+	}
+
+	FloatRect getRect()
+	{
+		return FloatRect(x, y, w, h);
+	}
+
+	void option(std::string NAME, float SPEED = 0, int HEALTH = 10, std::string FIRST_ANIM = "")
+	{
+		Name = NAME;
+		if (FIRST_ANIM != "") anim.set(FIRST_ANIM);
+		w = anim.getW();
+		h = anim.getH();
+		dx = SPEED;
+		Health = HEALTH;
+	}
+
+};
+
+class PLAYER : public Entity
+{
+public:
+	enum { stay, walk, duck, jump, climb, swim } STATE;
+	bool onLadder, shoot, hit;
+	std::map<std::string, bool> key;
+
+	PLAYER(AnimationManager& a, int x, int y) :Entity(a, x, y)
+	{
+		option("Player", 0, 100, "stay");
+		STATE = stay; hit = false;
+	}
+
+	void Keyboard()
+	{
+		if (key["L"])
+		{
+			dir = 1;
+			if (STATE != duck) dx = -0.1;
+			if (STATE == stay) STATE = walk;
+		}
+
+		if (key["R"])
+		{
+			dir = 0;
+			if (STATE != duck) dx = 0.1;
+			if (STATE == stay) STATE = walk;
+		}
+
+		if (key["Up"])
+		{
+			if (onLadder) STATE = climb;
+			if (STATE == stay || STATE == walk) { dy = -0.27; STATE = jump; anim.play("jump"); }
+			if (STATE == climb) dy = -0.05;
+			if (STATE == climb) if (key["L"] || key["R"]) STATE = stay;
+		}
+
+		if (key["Down"])
+		{
+			if (STATE == stay || STATE == walk) { STATE = duck; dx = 0; }
+			if (STATE == climb) dy = 0.05;
+		}
+
+		if (key["Space"])
+		{
+			shoot = true;
+		}
+
+		/////////////////////если клавиша отпущена///////////////////////////
+		if (!(key["R"] || key["L"]))
+		{
+			dx = 0;
+			if (STATE == walk) STATE = stay;
+		}
+
+		if (!(key["Up"] || key["Down"]))
+		{
+			if (STATE == climb) dy = 0;
+		}
+
+		if (!key["Down"])
+		{
+			if (STATE == duck) { STATE = stay; }
+		}
+
+		if (!key["Space"])
+		{
+			shoot = false;
+		}
+
+		key["R"] = key["L"] = key["Up"] = key["Down"] = key["Space"] = false;
+	}
+
+	void Animation(float time)
+	{
+		if (STATE == stay) anim.set("stay");
+		if (STATE == walk) anim.set("walk");
+		if (STATE == jump) anim.set("jump");
+		if (STATE == duck) anim.set("duck");
+		if (STATE == climb) { anim.set("climb"); anim.pause(); if (dy != 0) anim.play(); }
+
+		if (shoot) {
+			anim.set("shoot");
+			if (STATE == walk) anim.set("shootAndWalk");
+		}
+
+		if (hit) {
+			timer += time;
+			if (timer > 1000) { hit = false; timer = 0; }
+			anim.set("hit");
+		}
+
+		if (dir) anim.flip();
+
+		anim.tick(time);
+	}
+
+	void update(float time)
+	{
+		Keyboard();
+
+		Animation(time);
+
+		if (STATE == climb) if (!onLadder) STATE = stay;
+		if (STATE != climb) dy += 0.0005 * time;
+		onLadder = false;
+
+		x += dx * time;
+		Collision(0);
+
+		y += dy * time;
+		Collision(1);
+	}
+
+	void Collision(int num)
+	{
+		for (int i = 0;i < obj.size();i++)
+			if (getRect().intersects(obj[i].rect))
+			{
+				if (obj[i].name == "solid")
+				{
+					if (dy > 0 && num == 1) { y = obj[i].rect.top - h;  dy = 0;   STATE = stay; }
+					if (dy < 0 && num == 1) { y = obj[i].rect.top + obj[i].rect.height;   dy = 0; }
+					if (dx > 0 && num == 0) { x = obj[i].rect.left - w; }
+					if (dx < 0 && num == 0) { x = obj[i].rect.left + obj[i].rect.width; }
+				}
+
+				if (obj[i].name == "ladder") { onLadder = true; if (STATE == climb) x = obj[i].rect.left - 10; }
+
+				if (obj[i].name == "SlopeLeft")
+				{
+					FloatRect r = obj[i].rect;
+					int y0 = (x + w / 2 - r.left) * r.height / r.width + r.top - h;
+					if (y > y0)
+						if (x + w / 2 > r.left)
+						{
+							y = y0; dy = 0; STATE = stay;
+						}
+				}
+
+				if (obj[i].name == "SlopeRight")
+				{
+					FloatRect r = obj[i].rect;
+					int y0 = -(x + w / 2 - r.left) * r.height / r.width + r.top + r.height - h;
+					if (y > y0)
+						if (x + w / 2 < r.left + r.width)
+						{
+							y = y0; dy = 0; STATE = stay;
+						}
+				}
+
+			}
+	}
+
+};
+
+class ENEMY : public Entity
+{
+public:
+
+	ENEMY(AnimationManager& a, Level& lev, int x, int y) :Entity(a, x, y)
+	{
+		option("Enemy", 0.01, 15, "move");
+	}
+
+	void update(float time)
+	{
+		x += dx * time;
+		timer += time;
+		if (timer > 3200) { dx *= -1;timer = 0; }
+
+		if (Health <= 0) {
+			anim.set("dead"); dx = 0;
+			timer_end += time;
+			if (timer_end > 4000) life = false;
+		}
+
+		anim.tick(time);
+	}
+};
+class Bullet :public Entity
+{
+public:
+
+	Bullet(AnimationManager& a, Level& lev, int x, int y, bool dir) :Entity(a, x, y)
+	{
+		option("Bullet", 0.3, 10, "move");
+
+		if (dir) dx = -0.3;
+		obj = lev.GetObjects("solid");
+	}
+
+	void update(float time)
+	{
+		x += dx * time;
+
+		for (int i = 0;i < obj.size();i++)
+			if (getRect().intersects(obj[i].rect))
+			{
+				Health = 0;
+			}
+
+		if (Health <= 0) {
+			anim.set("explode");dx = 0;
+			if (anim.isPlaying() == false) life = false;
+		}
+
+		anim.tick(time);
+	}
+
+};
+
+class HealthBar
+{
+public:
+	Texture t;
+	Sprite s;
+	int max;
+	RectangleShape bar;
+
+	HealthBar()
+	{
+		t.loadFromFile("files/images/HealthBar.png");
+		s.setTexture(t);
+
+		bar.setFillColor(Color(0,0,0));
+		max = 100;
+	}
+
+	void update(int k)
+	{
+		if (k>0) if (k<max) bar.setSize( Vector2f(10, (max-k)*70/max) );
+	}
+
+   	void draw(RenderWindow &window)
+	{
+		Vector2f center = window.getView().getCenter();
+		Vector2f size = window.getView().getSize();
+
+		s.setPosition(   center.x - size.x/2 + 10, center.y - size.y/2 + 10);
+	    bar.setPosition( center.x - size.x/2 + 11, center.y - size.y/2 + 13);
+
+		window.draw(s);
+		window.draw(bar);
+	}
+
+};
+
+class MovingPlatform : public Entity
+{
+public:
+	MovingPlatform(AnimationManager& a, Level& lev, int x, int y) :Entity(a, x, y)
+	{
+		option("MovingPlatform", 0.05, 0, "move");
+	}
+
+	void update(float time)
+	{
+		x += dx * time;
+		timer += time;
+		if (timer > 6000) { dx *= -1;timer = 0; }
+		anim.tick(time);
+	}
+
+};
+
+
+
+int main()
+{
+	
+	RunGame();
+
+	return 0;
+}
