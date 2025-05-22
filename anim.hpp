@@ -1,4 +1,4 @@
-#ifndef ANIM_H
+﻿#ifndef ANIM_H
 #define ANIM_H
 #include <SFML/Graphics.hpp>
 using namespace sf;
@@ -11,9 +11,13 @@ public:
 	bool flip, isPlaying;
 	Sprite sprite;
 
+	//конструктор по умолчанию
+	Animation() : currentFrame(0), speed(0), flip(false), isPlaying(false) {}
+
+
 	Animation(Texture& t, int x, int y, int w, int h, int count, float Speed, int step)
 	{
-		speed = Speed; 
+		speed = Speed;
 		sprite.setTexture(t);
 
 		currentFrame = 0;
@@ -44,10 +48,10 @@ public:
 };
 
 
-
 class AnimationManager
 {
 public:
+
 	String currentAnim;
 	std::map<String, Animation> animList;
 
@@ -55,9 +59,9 @@ public:
 	{
 	}
 
-	void create(String name, Texture& t, int x, int y, int w, int h, int count, float speed, int step) 
+	void create(String name, Texture& t, int x, int y, int w, int h, int count, float speed, int step)
 	{
-		animList[name] = Animation(t, x, y, w, h, count, speed, step);
+		animList.emplace(name, Animation(t, x, y, w, h, count, speed, step));
 		currentAnim = name;
 	}
 
